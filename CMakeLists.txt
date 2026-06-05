@@ -31,6 +31,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
         videowidget.h videowidget.cpp videowidget.ui
+        mystructs.h
     )
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET MediaPlayer APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
@@ -80,3 +81,4 @@ if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(MediaPlayer)
 endif()
 
+set_target_properties(MediaPlayer PROPERTIES WIN32_EXECUTABLE FALSE)

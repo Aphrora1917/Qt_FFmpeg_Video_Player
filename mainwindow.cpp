@@ -22,8 +22,12 @@ MainWindow::MainWindow(QWidget *parent)
     ui->centralwidget->layout()->addWidget(vw);
     vw->setParent(this->centralWidget());
 
-    // player->play();
+    ui->centralwidget->layout()->setContentsMargins(0, 0, 0, 0);
+    ui->centralwidget->layout()->setSpacing(0);
+    vw->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::MinimumExpanding);
+    // vw->setMinimumSize(QSize(400, 300));
 
+    // player->play();
 
     // vw->setParent(this);
 

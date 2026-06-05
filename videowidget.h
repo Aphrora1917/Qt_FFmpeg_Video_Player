@@ -10,6 +10,14 @@
 #include <QFile>
 #include <QDir>
 #include <QDebug>
+#include <QPainter>
+#include <QPaintEvent>
+#include <QTimer>
+#include <QMouseEvent>
+
+#include <string>
+#include <iostream>
+#include <cstdio>
 
 extern "C"
 {
@@ -18,13 +26,14 @@ extern "C"
 #include <libavutil/opt.h>
 #include <libavutil/avutil.h>
 #include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
 }
 
 namespace Ui {
 class VideoWidget;
 }
 
-class VideoWidget : public QFrame
+class VideoWidget : public QWidget
 {
     Q_OBJECT
 
@@ -32,30 +41,31 @@ public:
     explicit VideoWidget(QWidget *parent = nullptr);
     ~VideoWidget();
 
+    int openVideo(const std::string &_url);
+    void renderingFrame(const AVFrame* _frame);
+    void play();
+    void pause();
+    void end();
+    void setPlaybackRate(float _rate);
+    void jumpToTime(double _time);
+    void setImage(const QImage& image);
+
+public: signals:
+    void updateImg(const QImage &_img);
+
 protected:
-    virtual void contextMenuEvent(QContextMenuEvent *event);
+    virtual void paintEvent(QPaintEvent *event);
+    virtual void mouseEvent(QMouseEvent *event);
 
 private:
-    void createRightPopActions();
-
-private slots:
-    void openLocalVideoSlot();
-    void openUrlVideoSlot();
+    void write_yuv_to_file(AVFrame* frame);
 
 private:
     Ui::VideoWidget *ui;
 
-    QMenu *popMenu;               //右键弹出式菜单
-    QAction *openLocalAction;     //打开本地文件
-    QAction *openUrlAction;       //打开网络文件
-    QAction *fullScreenAction;    //全屏显示
-    QAction *normalScreenAction;  //普通显示
-    QAction *quitAction;          //退出
-
-    QMediaPlayer *player;
-
-
-    // QVideoWidget* av_widget;    //不需要了,界面上已经拖了一个QVideoWidget进去了
+    std::string url;
+    bool isPlay;
+    QImage currentImage;
 };
 
 #endif // VIDEOWIDGET_H

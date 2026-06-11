@@ -18,6 +18,9 @@
 #include <string>
 #include <iostream>
 #include <cstdio>
+#include <thread>
+
+#include "playercore.h"
 
 extern "C"
 {
@@ -41,7 +44,8 @@ public:
     explicit VideoWidget(QWidget *parent = nullptr);
     ~VideoWidget();
 
-    int openVideo(const std::string &_url);
+    int openVideo_single_thread(const std::string &_url);
+    std::shared_ptr<PlayerCore> open_video(const std::string &_url);
     void renderingFrame(const AVFrame* _frame);
     void play();
     void pause();
@@ -58,10 +62,21 @@ protected:
     virtual void mouseEvent(QMouseEvent *event);
 
 private:
+    void read_thread_func(std::shared_ptr<PlayerCore> pc);
+    void video_thread_func(std::shared_ptr<PlayerCore> pc);
+    void audio_thread_func(std::shared_ptr<PlayerCore> pc);
+    void subtitle_thread_func(std::shared_ptr<PlayerCore> pc);
+
     void write_yuv_to_file(AVFrame* frame);
 
 private:
     Ui::VideoWidget *ui;
+
+    std::shared_ptr<PlayerCore> m_pc;
+    std::thread t_read;
+    std::thread t_video;
+    std::thread t_audio;
+    std::thread t_subtitle;
 
     std::string url;
     bool isPlay;

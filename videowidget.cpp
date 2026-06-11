@@ -8,17 +8,22 @@ VideoWidget::VideoWidget(QWidget *parent)
     ui->setupUi(this);
 
     QTimer::singleShot(1000, [=](){
-        openVideo("./test_video.mp4");
+        openVideo_single_thread("./test_video.mp4");
     });
 
     connect(this, &VideoWidget::updateImg, this, &VideoWidget::setImage);
 
     qDebug() << avcodec_version();
     qDebug() << avcodec_license();
+
+    QTimer::singleShot(1000, [=](){
+        m_pc = open_video("./test_video.mp4");
+    });
+    m_pc = std::make_shared<PlayerCore>();
 }
 
 
-int VideoWidget::openVideo(const std::string &_url)
+int VideoWidget::openVideo_single_thread(const std::string &_url)
 {
     AVFrame	*pFrame = nullptr, *rgb_frame = nullptr;
     struct SwsContext *sws_ctx = nullptr;
@@ -178,6 +183,36 @@ int VideoWidget::openVideo(const std::string &_url)
     avformat_close_input(&fmt_ctx);
 
     return 0;
+}
+
+std::shared_ptr<PlayerCore> VideoWidget::open_video(const std::string &_url)
+{
+    auto pc = std::make_shared<PlayerCore>();
+    pc->filename = std::move(_url);
+    // 解协议操作，将视频协议信息传递给PlayerCore对其初始化...
+
+    // 启动线程
+    t_read = std::thread(&VideoWidget::read_thread_func, this, this->m_pc);
+}
+
+void VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> pc)
+{
+
+}
+
+void VideoWidget::video_thread_func(std::shared_ptr<PlayerCore> pc)
+{
+
+}
+
+void VideoWidget::audio_thread_func(std::shared_ptr<PlayerCore> pc)
+{
+
+}
+
+void VideoWidget::subtitle_thread_func(std::shared_ptr<PlayerCore> pc)
+{
+
 }
 
 void VideoWidget::renderingFrame(const AVFrame *_frame)

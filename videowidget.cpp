@@ -188,29 +188,132 @@ int VideoWidget::openVideo_single_thread(const std::string &_url)
 std::shared_ptr<PlayerCore> VideoWidget::open_video(const std::string &_url)
 {
     auto pc = std::make_shared<PlayerCore>();
+
+    // 对PlayerCore进行初始化
     pc->filename = std::move(_url);
-    // 解协议操作，将视频协议信息传递给PlayerCore对其初始化...
 
-    // 启动线程
-    t_read = std::thread(&VideoWidget::read_thread_func, this, this->m_pc);
+    // 对PlayerCore的PackageQueue和FrameQueue进行初始化
+
+
+    // 启动read_thread线程
+    this->future_read = std::make_unique<std::future<int>>(std::async(std::launch::async, &VideoWidget::read_thread_func, this, pc));
 }
 
-void VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> pc)
+int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
+{
+    // 解协议操作，将视频协议信息传递给PlayerCore
+
+    // 创建AVFormatContext来处理输入流
+    AVFormatContext *fmt_ctx = nullptr;
+
+    int ret = 0;
+
+    // 打开输入流（UDP单播）
+    if ((ret = avformat_open_input(&fmt_ctx, _pc->filename.c_str(), nullptr, nullptr)) < 0) {
+        std::cerr << "无法打开输入流: " << _pc->filename << std::endl;
+        output_ffmeg_error(ret);
+        return ret;
+    }
+
+    // 获取输入流信息
+    if ((ret = avformat_find_stream_info(fmt_ctx, nullptr)) < 0) {
+        std::cerr << "无法获取输入流信息!" << std::endl;
+        output_ffmeg_error(ret);
+        return ret;
+    }
+
+    // 查找视频流、音频流、字幕流
+    int stream_index[AVMEDIA_TYPE_NB];
+    memset(stream_index, -1, sizeof(stream_index));
+
+    // 为了稳妥和兼容性，调用ffmpeg提供的av_find_best_stream，而非直接轮询fmt_ctx->streams[i]->codecpar->codec_type
+    stream_index[AVMEDIA_TYPE_VIDEO] =
+        av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO,
+                            stream_index[AVMEDIA_TYPE_VIDEO], -1, NULL, 0);
+
+    stream_index[AVMEDIA_TYPE_AUDIO] =
+        av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO,
+                            stream_index[AVMEDIA_TYPE_AUDIO],
+                            stream_index[AVMEDIA_TYPE_VIDEO],
+                            NULL, 0);
+
+    stream_index[AVMEDIA_TYPE_SUBTITLE] =
+        av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_SUBTITLE,
+                            stream_index[AVMEDIA_TYPE_SUBTITLE],
+                            (stream_index[AVMEDIA_TYPE_AUDIO] >= 0 ?
+                                 stream_index[AVMEDIA_TYPE_AUDIO] :
+                                 stream_index[AVMEDIA_TYPE_VIDEO]),
+                            NULL, 0);
+
+
+    // 尝试打开流，依据打开情况，来选择要启动的解码线程
+    int ret_video = 0;
+    int ret_audio = 0;
+    int ret_subtitle = 0;
+    if (stream_index[AVMEDIA_TYPE_VIDEO] >= 0) {
+        // 尝试打开视频流相关组件
+        ret_video = stream_component_open(_pc, stream_index[AVMEDIA_TYPE_VIDEO]);
+    }
+    if (stream_index[AVMEDIA_TYPE_AUDIO] >= 0) {
+        // 尝试打开音频流相关组件
+        ret_audio = stream_component_open(_pc, stream_index[AVMEDIA_TYPE_AUDIO]);
+    }
+    if (stream_index[AVMEDIA_TYPE_SUBTITLE] >= 0) {
+        // 尝试打开字幕流相关组件
+        ret_subtitle = stream_component_open(_pc, stream_index[AVMEDIA_TYPE_SUBTITLE]);
+    }
+
+    // 依据流组件打开结果设置PlayerCore的show_mode
+    if (ret_video >= 0)
+        _pc->show_mode = PlayerCore::ShowMode::SHOW_MODE_VIDEO;
+    else if (ret_audio >=0)
+        _pc->show_mode = PlayerCore::ShowMode::SHOW_MODE_AUDIO;
+    else
+        _pc->show_mode = PlayerCore::ShowMode::SHOW_MODE_NONE;
+
+
+    // 解封装循环（read_thread）：不仅是读取，更是“调度中心”
+    // 1.解封装获取AVPacket，并且对AVPacket按照流类型进行分发
+    // 2.处理暂停（Pause）—— 让出 CPU
+    // 3.处理跳转（Seek）—— 清空流水线
+    // 4.流量控制（背压）—— 防止内存爆炸
+    // 5.处理结束（EOF）与循环（Loop）
+    for(;;)
+    {
+
+    }
+}
+
+int VideoWidget::stream_component_open(std::shared_ptr<PlayerCore> _pc, int stream_index)
+{
+    // 查找视频解码器、创建解码器上下文、配置解码器参数、打开解码器
+
+    switch (stream_index) {
+    case AVMEDIA_TYPE_VIDEO:
+
+        break;
+    case AVMEDIA_TYPE_AUDIO:
+
+        break;
+    case AVMEDIA_TYPE_SUBTITLE:
+
+        break;
+    default:
+        break;
+    }
+}
+
+int VideoWidget::video_thread_func(std::shared_ptr<PlayerCore> _pc)
 {
 
 }
 
-void VideoWidget::video_thread_func(std::shared_ptr<PlayerCore> pc)
+int VideoWidget::audio_thread_func(std::shared_ptr<PlayerCore> _pc)
 {
 
 }
 
-void VideoWidget::audio_thread_func(std::shared_ptr<PlayerCore> pc)
-{
-
-}
-
-void VideoWidget::subtitle_thread_func(std::shared_ptr<PlayerCore> pc)
+int VideoWidget::subtitle_thread_func(std::shared_ptr<PlayerCore> _pc)
 {
 
 }

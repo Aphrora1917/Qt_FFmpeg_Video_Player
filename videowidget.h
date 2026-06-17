@@ -19,6 +19,7 @@
 #include <iostream>
 #include <cstdio>
 #include <thread>
+#include <future>
 
 #include "playercore.h"
 
@@ -30,6 +31,14 @@ extern "C"
 #include <libavutil/avutil.h>
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
+}
+
+void output_ffmeg_error(int ret)
+{
+    char errbuf[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(ret, errbuf, sizeof(errbuf));
+    std::cout << "Error code: " << ret
+              << ", message: " << errbuf << std::endl;
 }
 
 namespace Ui {
@@ -62,10 +71,11 @@ protected:
     virtual void mouseEvent(QMouseEvent *event);
 
 private:
-    void read_thread_func(std::shared_ptr<PlayerCore> pc);
-    void video_thread_func(std::shared_ptr<PlayerCore> pc);
-    void audio_thread_func(std::shared_ptr<PlayerCore> pc);
-    void subtitle_thread_func(std::shared_ptr<PlayerCore> pc);
+    int read_thread_func(std::shared_ptr<PlayerCore> _pc);
+    int stream_component_open(std::shared_ptr<PlayerCore> _pc, int stream_index);
+    int video_thread_func(std::shared_ptr<PlayerCore> _pc);
+    int audio_thread_func(std::shared_ptr<PlayerCore> _pc);
+    int subtitle_thread_func(std::shared_ptr<PlayerCore> _pc);
 
     void write_yuv_to_file(AVFrame* frame);
 
@@ -73,6 +83,12 @@ private:
     Ui::VideoWidget *ui;
 
     std::shared_ptr<PlayerCore> m_pc;
+
+    std::unique_ptr<std::future<int>> future_read;
+    std::unique_ptr<std::future<int>> future_audio;
+    std::unique_ptr<std::future<int>> future_video;
+    std::unique_ptr<std::future<int>> future_subtitle;
+
     std::thread t_read;
     std::thread t_video;
     std::thread t_audio;

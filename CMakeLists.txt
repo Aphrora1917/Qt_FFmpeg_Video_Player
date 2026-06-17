@@ -31,8 +31,13 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
         videowidget.h videowidget.cpp videowidget.ui
-        mystructs.h
+
         playercore.h
+
+        PacketQueue.h
+        FrameQueue.h
+        ringbuffer.h
+        syncqueue.h
     )
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET MediaPlayer APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR

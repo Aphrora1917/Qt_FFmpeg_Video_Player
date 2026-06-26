@@ -4,8 +4,9 @@
 #include <mutex>
 #include <string>
 
-#include "PacketQueue.h"
-#include "FrameQueue.h"
+#include "packetQueue.h"
+#include "frameQueue.h"
+#include "decoder.h"
 
 extern "C"
 {
@@ -42,20 +43,32 @@ public:
     } show_mode;
 
     int video_stream;
+    AVStream *video_st;
     AVCodecParameters *video_codec_params;
     PacketQueue video_p_que;
     FrameQueue video_f_que;
 
     int audio_stream;
+    AVStream *audio_st;
     AVCodecParameters *audio_codec_params;
     PacketQueue audio_p_que;
     FrameQueue audio_f_que;
 
     int subtitle_stream;
+    AVStream *subtitle_st;
     AVCodecParameters *subtitle_codec_params;
     PacketQueue subtitle_p_que;
     FrameQueue subtitle_f_que;
 
+    Decoder auddec;
+    Decoder viddec;
+    Decoder subdec;
+
+    int last_audio_stream;
+    int last_subtitle_stream;
+    int last_video_stream;
+
+    int eof = 0;
 
     std::mutex m_mutex;     // 互斥锁
 };

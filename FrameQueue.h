@@ -3,7 +3,7 @@
 
 #include <string>
 
-#include "PacketQueue.h"
+#include "packetQueue.h"
 #include "ringbuffer.h"
 
 struct MyException

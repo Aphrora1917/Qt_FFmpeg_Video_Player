@@ -222,6 +222,8 @@ int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
         return ret;
     }
 
+    _pc->fmt_ctx = fmt_ctx;
+
     // 查找视频流、音频流、字幕流
     int stream_index[AVMEDIA_TYPE_NB];
     memset(stream_index, -1, sizeof(stream_index));
@@ -276,7 +278,7 @@ int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
     // 1.解封装获取AVPacket，并且对AVPacket按照流类型进行分发
     // 2.处理暂停（Pause）—— 让出 CPU
     // 3.处理跳转（Seek）—— 清空流水线
-    // 4.流量控制（背压）—— 防止内存爆炸
+    // 4.流量控制（背压）—— 防止内存爆炸，PacketQueue空时read_thread还需被条件变量唤醒，获取AVPacket并将其入队
     // 5.处理结束（EOF）与循环（Loop）
     for(;;)
     {
@@ -284,15 +286,98 @@ int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
     }
 }
 
+// 若返回 0，代表函数执行成功，其他值为 ffmpeg 错误码
 int VideoWidget::stream_component_open(std::shared_ptr<PlayerCore> _pc, int stream_index)
 {
     // 查找视频解码器、创建解码器上下文、配置解码器参数、打开解码器
+    AVFormatContext *ic = _pc->fmt_ctx;
+    AVCodecContext *avctx;
+    const AVCodec *codec;
+    AVDictionary *opts = NULL;
+    int sample_rate;
+    // AVChannelLayout ch_layout = { 0 };
+    int ret = 0;
+    int stream_lowres = 0;
 
-    switch (stream_index) {
+    if (stream_index < 0 || stream_index >= ic->nb_streams)
+        return -1;
+
+    // 初始化空的解码器
+    avctx = avcodec_alloc_context3(NULL);
+    if (!avctx)
+        return AVERROR(ENOMEM);
+
+    // 分配解码器参数 codecpar 到解码器上下文 avctx
+    ret = avcodec_parameters_to_context(avctx, ic->streams[stream_index]->codecpar);
+    if (ret < 0)
+    {
+        avcodec_free_context(&avctx);
+        return ret;
+    }
+
+    // 设置包的时间基准（pkt_timebase），用于将 AVPacket.pts/dts 转换为解码器内部时间。
+    avctx->pkt_timebase = ic->streams[stream_index]->time_base;
+
+    // 查找/获取视频解码器，根据解码器上下文的 codec_id 查找系统自带的解码器。
+    codec = avcodec_find_decoder(avctx->codec_id);
+
+    switch(avctx->codec_type){
+    case AVMEDIA_TYPE_AUDIO   : _pc->last_audio_stream    = stream_index; break;
+    case AVMEDIA_TYPE_SUBTITLE: _pc->last_subtitle_stream = stream_index; break;
+    case AVMEDIA_TYPE_VIDEO   : _pc->last_video_stream    = stream_index; break;
+    }
+
+    // 判断解码器设置是否成功
+    if (!codec) {
+        ret = AVERROR(EINVAL);
+        avcodec_free_context(&avctx);
+        return ret;
+    }
+    avctx->codec_id = codec->id;
+
+    // 降低解码质量保证在低性能设备上的播放，先注释忽略
+    // if (stream_lowres > codec->max_lowres) {
+    //     av_log(avctx, AV_LOG_WARNING, "The maximum value for lowres supported by the decoder is %d\n",
+    //            codec->max_lowres);
+    //     stream_lowres = codec->max_lowres;
+    // }
+    // avctx->lowres = stream_lowres;
+
+    // 若未指定 threads，则默认设为 "auto"（自动选择线程数）。
+    if (!av_dict_get(opts, "threads", NULL, 0))
+        av_dict_set(&opts, "threads", "auto", 0);
+
+    // 设置 lowres 到选项字典（覆盖之前直接赋值）。先注释忽略
+    // if (stream_lowres)
+    //     av_dict_set_int(&opts, "lowres", stream_lowres, 0);
+
+    // 添加 flags=+copy_opaque，确保解码器会复制 AVPacket.opaque（用于传递帧位置信息）。先注释
+    // av_dict_set(&opts, "flags", "+copy_opaque", AV_DICT_MULTIKEY);
+
+    // 硬解，先注释，先用软解跑通，再打开注释进行硬件加速优化
+    // if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+    //     ret = create_hwaccel(&avctx->hw_device_ctx);
+    //     if (ret < 0)
+    //         goto fail;
+    // }
+
+    if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
+        avcodec_free_context(&avctx);
+        return ret;
+    }
+
+    _pc->eof = 0;
+    ic->streams[stream_index]->discard = AVDISCARD_DEFAULT;
+
+    // 解码器已配置完成，接下来是各解码线程的初始化操作和启动解码线程
+    switch (avctx->codec_type) {
     case AVMEDIA_TYPE_VIDEO:
+        _pc->video_stream = stream_index;
+        _pc->video_st = ic->streams[stream_index];
 
         break;
     case AVMEDIA_TYPE_AUDIO:
+        // 需要打开音频设备
 
         break;
     case AVMEDIA_TYPE_SUBTITLE:
@@ -301,6 +386,8 @@ int VideoWidget::stream_component_open(std::shared_ptr<PlayerCore> _pc, int stre
     default:
         break;
     }
+
+    return ret;
 }
 
 int VideoWidget::video_thread_func(std::shared_ptr<PlayerCore> _pc)

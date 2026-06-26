@@ -34,10 +34,11 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
 
         playercore.h
 
-        PacketQueue.h
-        FrameQueue.h
+        packetQueue.h
+        frameQueue.h
         ringbuffer.h
         syncqueue.h
+        decoder.h
     )
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET MediaPlayer APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR

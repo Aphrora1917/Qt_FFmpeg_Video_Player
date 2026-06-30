@@ -1,8 +1,9 @@
 #ifndef PLAYERCORE_H
 #define PLAYERCORE_H
 
-#include <mutex>
+#include <future>
 #include <string>
+#include <memory>
 
 #include "packetQueue.h"
 #include "frameQueue.h"
@@ -24,6 +25,7 @@ public:
         video_f_que.pkt_que = &video_p_que;
         audio_f_que.pkt_que = &audio_p_que;
         subtitle_f_que.pkt_que = &subtitle_p_que;
+        continue_read_thread = std::make_shared<std::condition_variable>();
     }
 
     ~PlayerCore()
@@ -70,7 +72,11 @@ public:
 
     int eof = 0;
 
-    std::mutex m_mutex;     // 互斥锁
+    // read_thread 解封装线程需要返回值，采用 async 启动，由 future 获得返回值，async 返回的 future 移动给成员变量管理线程生命周期
+    std::unique_ptr<std::future<int>> future_read;
+
+    // std::mutex m_mutex;     // 互斥锁
+    std::shared_ptr<std::condition_variable> continue_read_thread;   // 为控制read_thread的条件变量，它关联的锁在read_thread_func()内部定义
 };
 
 #endif // PLAYERCORE_H

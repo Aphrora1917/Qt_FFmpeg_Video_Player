@@ -196,11 +196,14 @@ std::shared_ptr<PlayerCore> VideoWidget::open_video(const std::string &_url)
 
 
     // 启动read_thread线程
-    this->future_read = std::make_unique<std::future<int>>(std::async(std::launch::async, &VideoWidget::read_thread_func, this, pc));
+    m_pc->future_read = std::make_unique<std::future<int>>(std::async(std::launch::async, &VideoWidget::read_thread_func, this, pc));
 }
 
 int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
 {
+    std::mutex wait_mutex;      // read_thread的锁，用于在PacketQueue满和空时控制read_thread的读取进度
+
+
     // 解协议操作，将视频协议信息传递给PlayerCore
 
     // 创建AVFormatContext来处理输入流
@@ -370,24 +373,88 @@ int VideoWidget::stream_component_open(std::shared_ptr<PlayerCore> _pc, int stre
     ic->streams[stream_index]->discard = AVDISCARD_DEFAULT;
 
     // 解码器已配置完成，接下来是各解码线程的初始化操作和启动解码线程
+    // 将解码器上下文、队列、状态变量和线程执行体绑定成一个完整的“解码会话（Decoding Session）”
     switch (avctx->codec_type) {
     case AVMEDIA_TYPE_VIDEO:
+    {
         _pc->video_stream = stream_index;
         _pc->video_st = ic->streams[stream_index];
 
+        // 解码线程初始化
+        decoder_init(&_pc->viddec, avctx, &_pc->audio_p_que, _pc->continue_read_thread);
+
+        // 启动解码线程
+        auto func = std::bind(&VideoWidget::video_thread_func, this, std::placeholders::_1);
+        decoder_start(&_pc->viddec, func, _pc);
+
         break;
+    }
     case AVMEDIA_TYPE_AUDIO:
+    {
         // 需要打开音频设备
 
-        break;
-    case AVMEDIA_TYPE_SUBTITLE:
+
+        _pc->audio_stream = stream_index;
+        _pc->audio_st = ic->streams[stream_index];
+
+        // 解码线程初始化
+        decoder_init(&_pc->auddec, avctx, &_pc->audio_p_que, _pc->continue_read_thread);
+
+        // 启动解码线程
+        auto func = std::bind(&VideoWidget::audio_thread_func, this, std::placeholders::_1);
+        decoder_start(&_pc->auddec, func, _pc);
 
         break;
+    }
+    case AVMEDIA_TYPE_SUBTITLE:
+    {
+        _pc->subtitle_stream = stream_index;
+        _pc->subtitle_st = ic->streams[stream_index];
+
+        // 解码线程初始化
+        decoder_init(&_pc->subdec, avctx, &_pc->subtitle_p_que, _pc->continue_read_thread);
+
+        // 启动解码线程
+        auto func = std::bind(&VideoWidget::subtitle_thread_func, this, std::placeholders::_1);
+        decoder_start(&_pc->subdec, func, _pc);
+
+        break;
+    }
     default:
         break;
     }
 
     return ret;
+}
+
+int VideoWidget::decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, std::shared_ptr<std::condition_variable> empty_queue_cond)
+{
+    d->pkt = av_packet_alloc();
+    if (!d->pkt)
+        return AVERROR(ENOMEM);
+    d->avctx = avctx;
+    d->queue = queue;
+    d->empty_queue_cond = empty_queue_cond;
+    d->start_pts = AV_NOPTS_VALUE;
+    d->pkt_serial = -1;
+
+    d->queue->getLock();
+    d->queue->abort_request = 0;
+    d->queue->serial++;
+
+    return 0;
+}
+
+int VideoWidget::decoder_start(Decoder *d, std::function<int (std::shared_ptr<PlayerCore>)> fn, std::shared_ptr<PlayerCore> _pc)
+{
+    d->decoder_thread = std::thread(fn, _pc);
+
+    return 0;
+}
+
+void VideoWidget::decoder_abort(Decoder *d, FrameQueue *fq)
+{
+
 }
 
 int VideoWidget::video_thread_func(std::shared_ptr<PlayerCore> _pc)

@@ -73,6 +73,10 @@ protected:
 private:
     int read_thread_func(std::shared_ptr<PlayerCore> _pc);
     int stream_component_open(std::shared_ptr<PlayerCore> _pc, int stream_index);
+    int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, std::shared_ptr<std::condition_variable> empty_queue_cond);
+    int decoder_start(Decoder *d, std::function<int(std::shared_ptr<PlayerCore>)> fn, std::shared_ptr<PlayerCore> _pc);
+    void decoder_abort(Decoder *d, FrameQueue *fq);
+
     int video_thread_func(std::shared_ptr<PlayerCore> _pc);
     int audio_thread_func(std::shared_ptr<PlayerCore> _pc);
     int subtitle_thread_func(std::shared_ptr<PlayerCore> _pc);
@@ -83,16 +87,6 @@ private:
     Ui::VideoWidget *ui;
 
     std::shared_ptr<PlayerCore> m_pc;
-
-    std::unique_ptr<std::future<int>> future_read;
-    std::unique_ptr<std::future<int>> future_audio;
-    std::unique_ptr<std::future<int>> future_video;
-    std::unique_ptr<std::future<int>> future_subtitle;
-
-    std::thread t_read;
-    std::thread t_video;
-    std::thread t_audio;
-    std::thread t_subtitle;
 
     std::string url;
     bool isPlay;

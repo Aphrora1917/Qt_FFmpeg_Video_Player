@@ -69,6 +69,11 @@ public:
         return m_queue.size();
     }
 
+    auto getLock()
+    {
+        return std::unique_lock<std::mutex>(this->m_mutex);
+    }
+
 private:
     int m_max_size = 10;        // 队列最大容量，默认10
 

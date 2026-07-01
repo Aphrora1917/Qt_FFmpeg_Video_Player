@@ -196,20 +196,44 @@ std::shared_ptr<PlayerCore> VideoWidget::open_video(const std::string &_url)
 
 
     // 启动read_thread线程
-    m_pc->future_read = std::make_unique<std::future<int>>(std::async(std::launch::async, &VideoWidget::read_thread_func, this, pc));
+    m_pc->future_read = std::make_unique<std::future<int>>(std::async(
+        std::launch::async, &VideoWidget::read_thread_func, this, pc)
+    );
 }
 
 int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
 {
+    // 解协议操作，将视频协议信息传递给PlayerCore，尝试启动解码线程，读取AVPacket存入各解码器的的PacketQueue
+
+    AVFormatContext *fmt_ctx = nullptr;
+    AVPacket *pkt = NULL;
     std::mutex wait_mutex;      // read_thread的锁，用于在PacketQueue满和空时控制read_thread的读取进度
+    int ret = 0;
+    int ret_video = 0;
+    int ret_audio = 0;
+    int ret_subtitle = 0;
+    int genpts = 0;
+    int st_index[AVMEDIA_TYPE_NB];
+    memset(st_index, -1, sizeof(st_index));
 
 
-    // 解协议操作，将视频协议信息传递给PlayerCore
 
     // 创建AVFormatContext来处理输入流
-    AVFormatContext *fmt_ctx = nullptr;
+    fmt_ctx = avformat_alloc_context();
+    if (!fmt_ctx) {
+        av_log(NULL, AV_LOG_FATAL, "Could not allocate context.\n");
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+    pkt = av_packet_alloc();
+    if (!pkt) {
+        av_log(NULL, AV_LOG_FATAL, "Could not allocate packet.\n");
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
 
-    int ret = 0;
+    fmt_ctx->interrupt_callback.callback = decode_interrupt_cb;
+    fmt_ctx->interrupt_callback.opaque = _pc.get();
 
     // 打开输入流（UDP单播）
     if ((ret = avformat_open_input(&fmt_ctx, _pc->filename.c_str(), nullptr, nullptr)) < 0) {
@@ -217,6 +241,11 @@ int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
         output_ffmeg_error(ret);
         return ret;
     }
+
+    // 如果文件中的 PTS 不完整，强制 FFmpeg 根据 DTS 生成 PTS（对某些格式很重要）。
+    // 默认 genpts 为 0，视需求而定。如果处理的是 MP4/MKV 等标准封装，PTS 通常完整，可以不开启）。
+    if (genpts)
+        fmt_ctx->flags |= AVFMT_FLAG_GENPTS;
 
     // 获取输入流信息
     if ((ret = avformat_find_stream_info(fmt_ctx, nullptr)) < 0) {
@@ -227,45 +256,49 @@ int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
 
     _pc->fmt_ctx = fmt_ctx;
 
+    if (fmt_ctx->pb)
+        fmt_ctx->pb->eof_reached = 0;
+
+    _pc->max_frame_duration = (fmt_ctx->iformat->flags & AVFMT_TS_DISCONT) ? 10.0 : 3600.0;
+
+    _pc->realtime = is_realtime(fmt_ctx);
+
     // 查找视频流、音频流、字幕流
-    int stream_index[AVMEDIA_TYPE_NB];
-    memset(stream_index, -1, sizeof(stream_index));
+
 
     // 为了稳妥和兼容性，调用ffmpeg提供的av_find_best_stream，而非直接轮询fmt_ctx->streams[i]->codecpar->codec_type
-    stream_index[AVMEDIA_TYPE_VIDEO] =
+    st_index[AVMEDIA_TYPE_VIDEO] =
         av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO,
-                            stream_index[AVMEDIA_TYPE_VIDEO], -1, NULL, 0);
+                            st_index[AVMEDIA_TYPE_VIDEO], -1, NULL, 0);
 
-    stream_index[AVMEDIA_TYPE_AUDIO] =
+    st_index[AVMEDIA_TYPE_AUDIO] =
         av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO,
-                            stream_index[AVMEDIA_TYPE_AUDIO],
-                            stream_index[AVMEDIA_TYPE_VIDEO],
+                            st_index[AVMEDIA_TYPE_AUDIO],
+                            st_index[AVMEDIA_TYPE_VIDEO],
                             NULL, 0);
 
-    stream_index[AVMEDIA_TYPE_SUBTITLE] =
+    st_index[AVMEDIA_TYPE_SUBTITLE] =
         av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_SUBTITLE,
-                            stream_index[AVMEDIA_TYPE_SUBTITLE],
-                            (stream_index[AVMEDIA_TYPE_AUDIO] >= 0 ?
-                                 stream_index[AVMEDIA_TYPE_AUDIO] :
-                                 stream_index[AVMEDIA_TYPE_VIDEO]),
+                            st_index[AVMEDIA_TYPE_SUBTITLE],
+                            (st_index[AVMEDIA_TYPE_AUDIO] >= 0 ?
+                                 st_index[AVMEDIA_TYPE_AUDIO] :
+                                 st_index[AVMEDIA_TYPE_VIDEO]),
                             NULL, 0);
 
 
     // 尝试打开流，依据打开情况，来选择要启动的解码线程
-    int ret_video = 0;
-    int ret_audio = 0;
-    int ret_subtitle = 0;
-    if (stream_index[AVMEDIA_TYPE_VIDEO] >= 0) {
+
+    if (st_index[AVMEDIA_TYPE_VIDEO] >= 0) {
         // 尝试打开视频流相关组件
-        ret_video = stream_component_open(_pc, stream_index[AVMEDIA_TYPE_VIDEO]);
+        ret_video = stream_component_open(_pc, st_index[AVMEDIA_TYPE_VIDEO]);
     }
-    if (stream_index[AVMEDIA_TYPE_AUDIO] >= 0) {
+    if (st_index[AVMEDIA_TYPE_AUDIO] >= 0) {
         // 尝试打开音频流相关组件
-        ret_audio = stream_component_open(_pc, stream_index[AVMEDIA_TYPE_AUDIO]);
+        ret_audio = stream_component_open(_pc, st_index[AVMEDIA_TYPE_AUDIO]);
     }
-    if (stream_index[AVMEDIA_TYPE_SUBTITLE] >= 0) {
+    if (st_index[AVMEDIA_TYPE_SUBTITLE] >= 0) {
         // 尝试打开字幕流相关组件
-        ret_subtitle = stream_component_open(_pc, stream_index[AVMEDIA_TYPE_SUBTITLE]);
+        ret_subtitle = stream_component_open(_pc, st_index[AVMEDIA_TYPE_SUBTITLE]);
     }
 
     // 依据流组件打开结果设置PlayerCore的show_mode
@@ -276,6 +309,29 @@ int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
     else
         _pc->show_mode = PlayerCore::ShowMode::SHOW_MODE_NONE;
 
+    if (_pc->video_stream < 0 && _pc->audio_stream < 0) {
+        av_log(NULL, AV_LOG_FATAL, "Failed to open file ...");
+        ret = -1;
+        goto fail;
+    }
+
+
+    // 如果打开文件时需要从中间位置开始播放（比如记住上次播放进度），可以保留。否则删掉。
+    // /* if seeking requested, we execute it */
+    // if (_pc->start_time != AV_NOPTS_VALUE) {
+    //     int64_t timestamp;
+
+    //     timestamp = _pc->start_time;
+    //     /* add the stream start time */
+    //     if (fmt_ctx->start_time != AV_NOPTS_VALUE)
+    //         timestamp += fmt_ctx->start_time;
+    //     ret = avformat_seek_file(fmt_ctx, -1, INT64_MIN, timestamp, INT64_MAX, 0);
+    //     if (ret < 0) {
+    //         av_log(NULL, AV_LOG_WARNING, "%s: could not seek to position %0.3f\n",
+    //                _pc->filename.c_str(), (double)timestamp / AV_TIME_BASE);
+    //     }
+    // }
+
 
     // 解封装循环（read_thread）：不仅是读取，更是“调度中心”
     // 1.解封装获取AVPacket，并且对AVPacket按照流类型进行分发
@@ -283,10 +339,254 @@ int VideoWidget::read_thread_func(std::shared_ptr<PlayerCore> _pc)
     // 3.处理跳转（Seek）—— 清空流水线
     // 4.流量控制（背压）—— 防止内存爆炸，PacketQueue空时read_thread还需被条件变量唤醒，获取AVPacket并将其入队
     // 5.处理结束（EOF）与循环（Loop）
-    for(;;)
-    {
+    for (;;) {
+        // 检查是否终止循环
+        if (_pc->abort_request)
+            break;
 
+        // 处理暂停 / 恢复状态变化
+        if (_pc->paused != _pc->last_paused) {
+            _pc->last_paused = _pc->paused;
+            if (_pc->paused)
+                _pc->read_pause_return = av_read_pause(fmt_ctx);
+            else
+                av_read_play(fmt_ctx);
+        }
+
+        // 处理 Seek（跳转）请求
+        if (_pc->seek_req) {
+            int64_t seek_target = _pc->seek_pos;     // 目标位置。
+            // 计算 Seek 的边界范围。+2 和 -2 是为了修正边界舍入误差。
+            int64_t seek_min    = _pc->seek_rel > 0 ? seek_target - _pc->seek_rel + 2: INT64_MIN;
+            int64_t seek_max    = _pc->seek_rel < 0 ? seek_target - _pc->seek_rel - 2: INT64_MAX;
+            // FIXME the +-2 is due to rounding being not done in the correct direction in generation
+            //      of the seek_pos/seek_rel variables
+
+            // 执行 seek
+            ret = avformat_seek_file(_pc->fmt_ctx, -1, seek_min, seek_target, seek_max, _pc->seek_flags);
+            if (ret < 0) {      // Seek 失败，打印错误日志。
+                av_log(NULL, AV_LOG_ERROR,
+                       "%s: error while seeking\n", _pc->fmt_ctx->url);
+            } else {
+                // 清空 PacketQueue
+                if (_pc->audio_stream >= 0)
+                    _pc->audio_p_que.packet_queue_flush();
+                if (_pc->subtitle_stream >= 0)
+                    _pc->subtitle_p_que.packet_queue_flush();
+                if (_pc->video_stream >= 0)
+                    _pc->video_p_que.packet_queue_flush();
+
+                // 重置外部时钟。如果是按字节 Seek，时钟设为 NaN；否则设为目标时间。
+                if (_pc->seek_flags & AVSEEK_FLAG_BYTE) {
+                    set_clock(&_pc->extclk, NAN, 0);
+                } else {
+                    set_clock(&_pc->extclk, seek_target / (double)AV_TIME_BASE, 0);
+                }
+            }
+            _pc->seek_req = 0;       // 清除 Seek 请求标志。
+            _pc->queue_attachments_req = 1;      // 标记需要重新处理封面图（如果有）。
+            _pc->eof = 0;        // 重置文件结束标志（因为现在在文件中间）。
+            if (_pc->paused)     // 如果当前处于暂停状态，强制刷新一帧画面，让显示立刻跳到新位置。
+                step_to_next_frame(_pc);
+        }
+
+        // 处理附加图片
+        if (_pc->queue_attachments_req) {
+            if (_pc->video_st && _pc->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC) {
+                if ((ret = av_packet_ref(pkt, &_pc->video_st->attached_pic)) < 0)
+                    goto fail;
+                _pc->video_p_que.packet_queue_put(pkt);
+
+                // 向 PacketQueue 发送空包
+                _pc->video_p_que.packet_queue_put_nullpacket(pkt, _pc->video_stream);
+            }
+            _pc->queue_attachments_req = 0;
+        }
+
+        // 流量控制
+        /* if the queue are full, no need to read more */
+        if (_pc->audio_p_que.size + _pc->video_p_que.size + _pc->subtitle_p_que.size > MAX_QUEUE_SIZE      // 检查三个包队列的总字节数是否超过 15MB（MAX_QUEUE_SIZE）。
+             || (stream_has_enough_packets(_pc->audio_st, _pc->audio_stream, &_pc->audio_p_que) &&
+                 stream_has_enough_packets(_pc->video_st, _pc->video_stream, &_pc->video_p_que) &&
+                 stream_has_enough_packets(_pc->subtitle_st, _pc->subtitle_stream, &_pc->subtitle_p_que))) {        // 或者，检查每个流是否已经拥有足够的数据包（MIN_FRAMES 且持续时间 > 1 秒）。
+            /* wait 10 ms */
+            // 加锁等待 10 毫秒，或者直到被 continue_read_thread 条件变量唤醒（如 Seek 或解码线程饥饿时）。
+            std::unique_lock<std::mutex> locker(wait_mutex);
+            _pc->continue_read_thread->wait_for(locker, std::chrono::milliseconds(10));
+
+            continue;
+        }
+
+        // 检测播放结束（EOF）和循环（Loop）逻辑
+        if (!_pc->paused &&      // 只有在非暂停状态下才检测是否结束。
+            (!_pc->audio_st || (_pc->auddec.finished == _pc->audio_p_que.serial && _pc->audio_f_que.frame_queue_nb_remaining() == 0)) &&       // 如果没有音频流，忽略。如果有音频流：解码器已标记为 finished（即收到了 EOF 空包并排空了解码器） 并且 音频帧队列（sampq）中已经没有剩余帧了。
+            (!_pc->video_st || (_pc->viddec.finished == _pc->video_p_que.serial && _pc->video_f_que.frame_queue_nb_remaining() == 0))) {       // 同理，对视频流也做同样的判断。如果以上条件都满足（文件确实播完了）：
+            if (_pc->loop != 1 && (!_pc->loop || --_pc->loop)) {       // 如果 loop 变量不等于 1，且（loop 为 0 代表无限循环，或者 --loop 后大于 0）。loop 默认是 1。当 loop 为 0 时表示无限循环；当 loop > 1 时表示循环次数，每次减 1。
+                stream_seek(_pc, _pc->start_time != AV_NOPTS_VALUE ? _pc->start_time : 0, 0, 0);       // 触发 Seek 到开头（或 _pc->start_time 指定的位置），实现循环播放。
+            } else if (_pc->autoexit) {      // 如果循环次数用完，且开启了自动退出
+                ret = AVERROR_EOF;      // 设置错误码为 EOF，跳转到 fail 标签，退出解封装线程。
+                goto fail;
+            }
+        }
+
+        // 读取一个 AVPacket
+        ret = av_read_frame(fmt_ctx, pkt);
+
+        // 读取错误 / EOF 处理
+        if (ret < 0) {      // 读取失败。
+            if ((ret == AVERROR_EOF || avio_feof(fmt_ctx->pb)) && !_pc->eof) {        // 如果是文件尾（EOF），且之前没有发过 EOF 信号。
+                // 向所有活动的解码器队列发送 NULL 包。这是 ffplay 设计的精髓——NULL 包是解码器的“结束指令”，告诉解码器“没有更多数据了，把缓存里憋着的所有帧都吐出来”。
+                if (_pc->video_stream >= 0)
+                {
+                    // 向 PacketQueue 发送空包
+                    _pc->video_p_que.packet_queue_put_nullpacket(pkt, _pc->video_stream);
+                }
+                if (_pc->audio_stream >= 0)
+                {
+                    _pc->audio_p_que.packet_queue_put_nullpacket(pkt, _pc->audio_stream);
+                }
+                if (_pc->subtitle_stream >= 0)
+                {
+                    _pc->subtitle_p_que.packet_queue_put_nullpacket(pkt, _pc->subtitle_stream);
+                }
+
+                // 标记已经发送过 EOF 包，防止重复发送。
+                _pc->eof = 1;
+            }
+            if (fmt_ctx->pb && fmt_ctx->pb->error) {      // 如果不是 EOF，而是真实的 I/O 错误（如网络断开、磁盘损坏）。
+                if (_pc->autoexit)       // 如果开启了自动退出则报错，否则跳出循环（不再尝试读取）。
+                    goto fail;
+                else
+                    break;
+            }
+
+            // 对于非致命错误，休眠 10ms 后重试（比如网络波动导致的一次性读取失败）。
+            std::unique_lock<std::mutex> locker(wait_mutex);
+            _pc->continue_read_thread->wait_for(locker, std::chrono::milliseconds(10));
+
+            continue;
+        } else {
+            // 无报错
+            _pc->eof = 0;
+        }
+
+        // 包分发 —— 将包放入对应的 PacketQueue
+        // 检查包的 stream_index 是否等于音频/视频/字幕流索引
+        if (pkt->stream_index == _pc->audio_stream) {
+            _pc->audio_p_que.packet_queue_put(pkt);     // 满足条件的包调用 packet_queue_put 入队。
+        } else if (pkt->stream_index == _pc->video_stream
+                   && !(_pc->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {     // 视频流还要额外排除 AV_DISPOSITION_ATTACHED_PIC（因为封面图已经特殊处理过了，不能重复入队）。
+            _pc->video_p_que.packet_queue_put(pkt);
+        } else if (pkt->stream_index == _pc->subtitle_stream) {
+            _pc->subtitle_p_que.packet_queue_put(pkt);
+        } else {
+            av_packet_unref(pkt);       // 如果是无关的流（如数据流、不关心的字幕流），立即释放该包，防止内存泄漏。
+        }
     }
+
+    // 循环结束与退出清理
+    ret = 0;
+fail:
+    if (fmt_ctx && !_pc->fmt_ctx)      // 如果解封装上下文还存在且未被外部接管，则释放它。
+    {
+        avformat_close_input(&fmt_ctx);
+        _pc->fmt_ctx = nullptr;
+    }
+
+    av_packet_free(&pkt);       // 释放临时工作包（pkt）。
+    if (ret != 0) {     // 如果是异常退出（ret 为负值，如 AVERROR_EOF 或内存错误）。
+        // 向主线程发送一个 FF_QUIT_EVENT 自定义事件，通知主线程程序需要退出或报错。
+        // 可以由 QEvent 替代
+    }
+
+    return 0;
+}
+
+int VideoWidget::is_realtime(AVFormatContext *s)
+{
+    if(   !strcmp(s->iformat->name, "rtp")
+        || !strcmp(s->iformat->name, "rtsp")
+        || !strcmp(s->iformat->name, "sdp")
+        )
+        return 1;
+
+    if(s->pb && (   !strncmp(s->url, "rtp:", 4)
+                  || !strncmp(s->url, "udp:", 4)
+                  )
+        )
+        return 1;
+    return 0;
+}
+
+int VideoWidget::stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *queue)
+{
+    return stream_id < 0 ||
+           queue->abort_request ||
+           (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
+           queue->nb_packets > MIN_FRAMES && (!queue->duration || av_q2d(st->time_base) * queue->duration > 1.0);
+}
+
+void VideoWidget::stream_seek(std::shared_ptr<PlayerCore> _pc, int64_t pos, int64_t rel, int by_bytes)
+{
+    if (!_pc->seek_req) {
+        _pc->seek_pos = pos;
+        _pc->seek_rel = rel;
+        _pc->seek_flags &= ~AVSEEK_FLAG_BYTE;
+        if (by_bytes)
+            _pc->seek_flags |= AVSEEK_FLAG_BYTE;
+        _pc->seek_req = 1;
+        _pc->continue_read_thread->notify_one();
+    }
+}
+
+void VideoWidget::set_clock(Clock *c, double pts, int serial)
+{
+    double time = av_gettime_relative() / 1000000.0;
+    set_clock_at(c, pts, serial, time);
+}
+
+void VideoWidget::set_clock_at(Clock *c, double pts, int serial, double time)
+{
+    // pts 是音视频帧的 pts，来自码流；
+    // last_update 是上一帧播放时刻，来自系统时钟；
+    // pts_drift 是 pts 和 系统时钟的差值。
+    c->pts = pts;
+    c->last_updated = time;
+    c->pts_drift = c->pts - time;
+    c->serial = serial;
+}
+
+double VideoWidget::get_clock(Clock *c)
+{
+    if (*c->queue_serial != c->serial)
+        return NAN;
+    if (c->paused) {
+        return c->pts;
+    } else {
+        double time = av_gettime_relative() / 1000000.0;
+        return c->pts_drift + time - (time - c->last_updated) * (1.0 - c->speed);
+    }
+}
+
+void VideoWidget::step_to_next_frame(std::shared_ptr<PlayerCore> _pc)
+{
+    /* if the stream is paused unpause it, then step */
+    if (_pc->paused)
+        stream_toggle_pause(_pc);
+    _pc->step = 1;
+}
+
+void VideoWidget::stream_toggle_pause(std::shared_ptr<PlayerCore> _pc)
+{
+    if (_pc->paused) {
+        _pc->frame_timer += av_gettime_relative() / 1000000.0 - _pc->vidclk.last_updated;
+        if (_pc->read_pause_return != AVERROR(ENOSYS)) {
+            _pc->vidclk.paused = 0;
+        }
+        set_clock(&_pc->vidclk, get_clock(&_pc->vidclk), _pc->vidclk.serial);
+    }
+    set_clock(&_pc->extclk, get_clock(&_pc->extclk), _pc->extclk.serial);
+    _pc->paused = _pc->audclk.paused = _pc->vidclk.paused = _pc->extclk.paused = !_pc->paused;
 }
 
 // 若返回 0，代表函数执行成功，其他值为 ffmpeg 错误码
@@ -437,19 +737,21 @@ int VideoWidget::decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *qu
     d->empty_queue_cond = empty_queue_cond;
     d->start_pts = AV_NOPTS_VALUE;
     d->pkt_serial = -1;
-
-    d->queue->getLock();
-    d->queue->abort_request = 0;
-    d->queue->serial++;
-
     return 0;
 }
 
 int VideoWidget::decoder_start(Decoder *d, std::function<int (std::shared_ptr<PlayerCore>)> fn, std::shared_ptr<PlayerCore> _pc)
 {
+    packet_queue_start(d->queue);
     d->decoder_thread = std::thread(fn, _pc);
-
     return 0;
+}
+
+void VideoWidget::packet_queue_start(PacketQueue *queue)
+{
+    auto lock = queue->getLock();
+    queue->abort_request = 0;
+    queue->serial++;
 }
 
 void VideoWidget::decoder_abort(Decoder *d, FrameQueue *fq)

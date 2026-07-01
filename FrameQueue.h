@@ -107,6 +107,18 @@ public:
     FrameQueue() : RingBuffer<Frame, 8>() {};
 
     PacketQueue *pkt_que = nullptr;
+
+    int rindex;
+    int windex;
+    int size;
+    int max_size;
+    int keep_last;
+    int rindex_shown;
+
+    int frame_queue_nb_remaining()
+    {
+        return this->size - this->rindex_shown;
+    }
 };
 
 #endif // FRAMEQUEUE_H

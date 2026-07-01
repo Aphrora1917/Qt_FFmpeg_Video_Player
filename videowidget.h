@@ -17,6 +17,7 @@
 
 #include <string>
 #include <iostream>
+#include <chrono>
 #include <cstdio>
 #include <thread>
 #include <future>
@@ -29,6 +30,7 @@ extern "C"
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
 #include <libavutil/avutil.h>
+#include "libavutil/time.h"
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
 }
@@ -72,9 +74,18 @@ protected:
 
 private:
     int read_thread_func(std::shared_ptr<PlayerCore> _pc);
+    int is_realtime(AVFormatContext *s);
+    int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *queue);
+    void stream_seek(std::shared_ptr<PlayerCore> _pc, int64_t pos, int64_t rel, int by_bytes);
+    void set_clock(Clock *c, double pts, int serial);
+    void set_clock_at(Clock *c, double pts, int serial, double time);
+    double get_clock(Clock *c);
+    void step_to_next_frame(std::shared_ptr<PlayerCore> _pc);
+    void stream_toggle_pause(std::shared_ptr<PlayerCore> _pc);
     int stream_component_open(std::shared_ptr<PlayerCore> _pc, int stream_index);
     int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, std::shared_ptr<std::condition_variable> empty_queue_cond);
     int decoder_start(Decoder *d, std::function<int(std::shared_ptr<PlayerCore>)> fn, std::shared_ptr<PlayerCore> _pc);
+    void packet_queue_start(PacketQueue *queue);
     void decoder_abort(Decoder *d, FrameQueue *fq);
 
     int video_thread_func(std::shared_ptr<PlayerCore> _pc);
@@ -83,6 +94,10 @@ private:
 
     void write_yuv_to_file(AVFrame* frame);
 
+    static int decode_interrupt_cb(void *ctx)
+    {
+        return ((PlayerCore *)ctx)->abort_request;
+    }
 private:
     Ui::VideoWidget *ui;
 

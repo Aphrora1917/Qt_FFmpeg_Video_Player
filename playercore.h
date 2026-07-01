@@ -8,6 +8,7 @@
 #include "packetQueue.h"
 #include "frameQueue.h"
 #include "decoder.h"
+#include "clock.h"
 
 extern "C"
 {
@@ -36,6 +37,10 @@ public:
     std::string filename;
     // AVInputFormat *iformat;
     AVFormatContext *fmt_ctx;
+    int realtime;
+
+    int width, height, xleft, ytop;
+    int step;
 
     enum class ShowMode {
         SHOW_MODE_NONE = -1,
@@ -43,6 +48,20 @@ public:
         SHOW_MODE_AUDIO,
         SHOW_MODE_NB
     } show_mode;
+
+    int abort_request;
+    int paused;
+    int last_paused;
+    int queue_attachments_req;
+    int seek_req;                   // 标识一次SEEK请求
+    int seek_flags;                 // SEEK标志，诸如AVSEEK_FLAG_BYTE等
+    int64_t seek_pos;               // SEEK的目标位置(当前位置+增量)
+    int64_t seek_rel;               // 本次SEEK的位置增量
+    int read_pause_return;
+    int loop = 1;
+    int64_t start_time = AV_NOPTS_VALUE;
+    bool autoexit = true;
+
 
     int video_stream;
     AVStream *video_st;
@@ -65,6 +84,13 @@ public:
     Decoder auddec;
     Decoder viddec;
     Decoder subdec;
+
+    Clock audclk;                   // 音频时钟
+    Clock vidclk;                   // 视频时钟
+    Clock extclk;                   // 外部时钟
+
+    double frame_timer;             // 记录最后一帧播放的时刻(单位是秒)
+    double max_frame_duration;      // maximum duration of a frame - above this, we consider the jump a timestamp discontinuity
 
     int last_audio_stream;
     int last_subtitle_stream;
